@@ -92,12 +92,7 @@ async function processarImagem(inputBuffer) {
     y3: 20.0
   });
   
-  // 5. Simular artefatos de compressão JPEG 
-  processedImage = processedImage.jpeg({ 
-    quality: 83,
-    chromaSubsampling: '4:2:0', // Subsampling típico de câmeras
-    force: true
-  });
+  // 5. Simular artefatos de compressão JPEG - removido daqui para evitar duplicação
   
   // 6. Adicionar leve rotação/transformação
   // Rotação muito leve (menos de 1 grau) para evitar padrões de pixels perfeitamente alinhados
@@ -114,10 +109,16 @@ async function processarImagem(inputBuffer) {
       hue: Math.floor(Math.random() * 7 - 3) // Leve alteração de matiz
     });
   
-  // 8. Remover todos os metadados
-  return processedImage
-    .withMetadata({ exif: false, icc: false, xmp: false })
-    .toBuffer();
+  // 8. Remover todos os metadados - usando a abordagem correta
+  // Primeiro convertemos para JPEG que já remove a maioria dos metadados
+  processedImage = processedImage.jpeg({ 
+    quality: 83,
+    chromaSubsampling: '4:2:0',
+    force: true
+  });
+  
+  // Depois usamos apenas o toBuffer sem withMetadata
+  return processedImage.toBuffer();
 }
 
 // 🔹 Endpoint que retorna BASE64
