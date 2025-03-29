@@ -2,238 +2,322 @@ const express = require('express');
 const sharp = require('sharp');
 const app = express();
 
-app.use(express.json({ limit: '25mb' }));
+// Aumentar o limite para arquivos grandes
+app.use(express.json({ limit: '50mb' }));
 
-// Função para aplicar transformações de forma segura
+// Função robusta para processamento que usa apenas métodos básicos e confiáveis do Sharp
 async function processarImagem(inputBuffer) {
+  console.log('[PROCESSO] Iniciando processamento da imagem');
+  
   try {
-    // Verificar se a imagem é válida
-    const metadata = await sharp(inputBuffer).metadata();
-    
-    // Aplicar transformações com operações nativas do Sharp
-    // Evitando manipulação direta de pixels que pode causar problemas
+    // Primeiro passo: converter para JPEG para normalizar o formato
+    console.log('[PROCESSO] Convertendo para JPEG inicial');
     let processedImage = sharp(inputBuffer);
     
-    // 1. Adicionar ruído com kernel de convolução
-    // Este método é mais seguro que manipular pixels diretamente
+    // Coletar metadados para diagnóstico, sem causar falha se não conseguir
+    try {
+      const metadata = await processedImage.metadata();
+      console.log(`[INFO] Formato original: ${metadata.format}, Dimensões: ${metadata.width}x${metadata.height}`);
+    } catch (e) {
+      console.log('[AVISO] Não foi possível ler metadados, continuando mesmo assim');
+    }
+    
+    // ETAPA 1: Remover e zerar todos os metadados
+    console.log('[PROCESSO] Removendo metadados');
+    // Método 1: Converter para JPEG simples (já remove a maioria dos metadados)
+    let bufferSemMetadados = await processedImage
+      .jpeg({ quality: 90 })
+      .toBuffer();
+    
+    // ETAPA 2: Aplicar transformações para quebrar padrões de IA
+    console.log('[PROCESSO] Aplicando transformações anti-detecção');
+    // Reiniciar com o buffer limpo
+    processedImage = sharp(bufferSemMetadados);
+    
+    // Aplicar leve blur para suavizar padrões de IA (método confiável)
+    console.log('[PROCESSO] Aplicando blur');
+    processedImage = processedImage.blur(0.5);
+    
+    // Aplicar sharpening para compensar o blur e simular câmera (método confiável)
+    console.log('[PROCESSO] Aplicando sharpening');
+    processedImage = processedImage.sharpen();
+    
+    // Aplicar ajustes de cor sutis (método confiável)
+    console.log('[PROCESSO] Aplicando ajustes de cor');
+    const brilho = 1 + (Math.random() * 0.06 - 0.03); // ±3%
+    const saturacao = 1 + (Math.random() * 0.1 - 0.05); // ±5%
+    processedImage = processedImage.modulate({
+      brightness: brilho,
+      saturation: saturacao
+    });
+    
+    // Aplicar leve rotação para quebrar padrões (método confiável)
+    console.log('[PROCESSO] Aplicando rotação');
+    const rotacao = Math.random() * 0.6 - 0.3; // ±0.3 graus
+    processedImage = processedImage.rotate(rotacao, {
+      background: { r: 255, g: 255, b: 255, alpha: 0 }
+    });
+    
+    // ETAPA 3: Simular ruído/grain usando método convolve (alternativa ao noise)
+    console.log('[PROCESSO] Aplicando ruído com convolve');
+    // Kernel de convolução que adiciona textura de grain
     processedImage = processedImage.convolve({
       width: 3,
       height: 3,
       kernel: [
-        -0.1, -0.1, -0.1,
-        -0.1,  2.0, -0.1,
-        -0.1, -0.1, -0.1
+        0.1, 0.1, 0.1,
+        0.1, 1.0, 0.1,
+        0.1, 0.1, 0.1
       ]
     });
     
-    // 2. Aplicar leve blur para suavizar padrões de IA
-    processedImage = processedImage.blur(0.5);
+    // ETAPA 4: Re-processar com JPEG com qualidade específica 
+    // para remover quaisquer metadados remanescentes
+    console.log('[PROCESSO] Finalizando com compressão JPEG');
+    const finalBuffer = await processedImage
+      .jpeg({
+        quality: 85,
+        chromaSubsampling: '4:2:0', // Formato comum de câmeras
+        force: true
+      })
+      .toBuffer();
     
-    // 3. Adicionar sharpening para recuperar detalhes e simular processamento de câmera
-    processedImage = processedImage.sharpen({
-      sigma: 1.2,
-      m1: 0.5,
-      m2: 0.7,
-      x1: 2.0,
-      y2: 20.0,
-      y3: 20.0
-    });
+    // ETAPA 5: Verificar se temos um buffer válido
+    if (!finalBuffer || finalBuffer.length === 0) {
+      throw new Error('Buffer final inválido ou vazio');
+    }
     
-    // 4. Aplicar grain através de noise (método nativo do Sharp)
-    processedImage = processedImage.noise({
-      type: 'gaussian',
-      sigma: 10
-    });
-    
-    // 5. Rotação leve para quebrar padrões de pixels
-    const rotacaoLeve = Math.random() * 0.5 - 0.25; // ±0.25 graus
-    processedImage = processedImage.rotate(rotacaoLeve, {
-      background: { r: 255, g: 255, b: 255, alpha: 0 }
-    });
-    
-    // 6. Ajustes sutis de cor
-    processedImage = processedImage.modulate({
-      brightness: 1 + (Math.random() * 0.06 - 0.03), // ±3% brilho
-      saturation: 1 + (Math.random() * 0.1 - 0.05),  // ±5% saturação
-      hue: Math.floor(Math.random() * 5 - 2)         // ±2 matiz
-    });
-    
-    // 7. Remover completamente todos os metadados
-    processedImage = processedImage.removeAlpha().ensureAlpha();
-    
-    // Primeiro remover todos os metadados explicitamente
-    processedImage = processedImage.withMetadata(false);
-    
-    // 8. Remover todas as tags EXIF, ICC, XMP e outros metadados ocultos
-    processedImage = processedImage.jpeg({
-      quality: 84,
-      chromaSubsampling: '4:2:0',
-      force: true,
-      // Desabilitar explicitamente todos os tipos de metadados
-      trellisQuantisation: true,
-      overshootDeringing: true,
-      optimizeScans: true,
-      mozjpeg: true,  // Usar mozjpeg para otimização máxima sem metadados
-    });
-    
-    // 9. Converter para outro formato e voltar para JPEG para quebrar assinaturas
-    // Isso garante que qualquer assinatura oculta seja removida
-    const tempBuffer = await processedImage.toBuffer();
-    processedImage = sharp(tempBuffer)
-                    .png()  // Converter para PNG
-                    .jpeg({ // Voltar para JPEG com configurações otimizadas
-                      quality: 87,
-                      chromaSubsampling: '4:2:0',
-                      force: true
-                    })
-                    .withMetadata(false); // Garantir novamente que não há metadados
-    
-    const finalBuffer = await processedImage.toBuffer();
-    
+    console.log(`[SUCESSO] Processamento concluído. Tamanho final: ${finalBuffer.length} bytes`);
     return finalBuffer;
   } catch (error) {
-    console.error('Erro no processamento interno da imagem:', error);
-    throw new Error(`Falha ao processar imagem: ${error.message}`);
+    // Registra detalhes completos do erro para diagnóstico
+    console.error('[ERRO] Falha no processamento: ', error);
+    throw new Error(`Falha no processamento da imagem: ${error.message}`);
   }
 }
 
-// Função para validar e decodificar Base64
-// Transformando em função assíncrona
-async function decodificarBase64(base64String) {
+// Função simples e direta para decodificar base64
+function decodificarBase64(base64String) {
+  // Validação preventiva
+  if (!base64String) {
+    throw new Error('String base64 vazia ou não fornecida');
+  }
+  
+  console.log('[PROCESSO] Decodificando Base64');
   try {
-    // Remover prefixo de data URI se existir
+    // Remover cabeçalho data URI se presente
     let base64Data = base64String;
-    if (base64String.includes('base64,')) {
+    const dataUriRegex = /^data:image\/[a-zA-Z0-9+]+;base64,/;
+    
+    if (dataUriRegex.test(base64String)) {
+      console.log('[INFO] Detectado Data URI, removendo prefixo');
+      base64Data = base64String.split(',')[1];
+    } else if (base64String.includes('base64,')) {
+      console.log('[INFO] Detectado prefixo base64, removendo');
       base64Data = base64String.split('base64,')[1];
     }
     
-    // Remover espaços em branco e caracteres inválidos
-    base64Data = base64Data.replace(/\s/g, '');
+    // Remover caracteres inválidos
+    base64Data = base64Data.replace(/[\r\n\t\f\v ]/g, '');
     
-    // Decodificar
-    const buffer = Buffer.from(base64Data, 'base64');
-    
-    // Verificar se o buffer tem conteúdo
-    if (buffer.length === 0) {
-      throw new Error('Buffer vazio após decodificação');
+    // Validar formato base64 (verifica se possui apenas caracteres válidos)
+    if (!/^[A-Za-z0-9+/=]+$/.test(base64Data)) {
+      console.warn('[AVISO] Base64 contém caracteres inválidos, tentando limpar');
+      base64Data = base64Data.replace(/[^A-Za-z0-9+/=]/g, '');
     }
     
-    // Retornar apenas o buffer original - removendo a parte que usava Sharp aqui
-    // para evitar problemas com promessas
+    // Decodificar para buffer
+    const buffer = Buffer.from(base64Data, 'base64');
+    
+    // Verificar se o resultado é válido
+    if (buffer.length === 0) {
+      throw new Error('Decodificação resultou em buffer vazio');
+    }
+    
+    console.log(`[SUCESSO] Base64 decodificado. Tamanho: ${buffer.length} bytes`);
     return buffer;
   } catch (error) {
+    console.error('[ERRO] Falha na decodificação base64:', error);
     throw new Error(`Falha ao decodificar Base64: ${error.message}`);
   }
 }
 
-// 🔹 Endpoint que retorna BASE64
+// Endpoint para retornar imagem como base64
 app.post('/clean-image', async (req, res) => {
+  console.log('[API] Recebida solicitação em /clean-image');
+  
   try {
     const { base64 } = req.body;
     
     if (!base64) {
+      console.error('[ERRO] Requisição sem o campo base64');
       return res.status(400).json({ 
-        error: 'Imagem não fornecida. Envie um JSON com o campo "base64".' 
+        error: 'Imagem não fornecida. Envie um JSON com o campo "base64".'
       });
     }
     
-    // Decodificar e validar o Base64
+    console.log('[API] Decodificando base64 da requisição');
     let inputBuffer;
     try {
-      inputBuffer = await decodificarBase64(base64);
+      // Uso direto, sem await (função não é assíncrona)
+      inputBuffer = decodificarBase64(base64);
     } catch (error) {
+      console.error('[ERRO] Falha na decodificação:', error);
       return res.status(400).json({ 
-        error: `Base64 inválido: ${error.message}` 
+        error: `Base64 inválido: ${error.message}`
       });
     }
     
-    // Processar a imagem
-    const finalBuffer = await processarImagem(inputBuffer);
-    
-    // Retornar o resultado
-    const cleanedBase64 = finalBuffer.toString('base64');
-    res.json({ cleanedBase64 });
+    console.log('[API] Iniciando processamento da imagem');
+    try {
+      const finalBuffer = await processarImagem(inputBuffer);
+      const cleanedBase64 = finalBuffer.toString('base64');
+      
+      console.log('[API] Retornando resultado como base64');
+      return res.json({ cleanedBase64 });
+    } catch (err) {
+      console.error('[ERRO] Falha no processamento:', err);
+      return res.status(500).json({ 
+        error: `Erro ao processar imagem: ${err.message}`
+      });
+    }
   } catch (err) {
-    console.error('Erro ao processar imagem (base64):', err);
-    res.status(500).json({ 
-      error: `Erro ao processar imagem: ${err.message}` 
+    console.error('[ERRO] Erro geral no endpoint:', err);
+    return res.status(500).json({ 
+      error: `Erro interno do servidor: ${err.message}`
     });
   }
 });
 
-// 🔹 Endpoint que retorna BINÁRIO
+// Endpoint para retornar imagem como arquivo binário
 app.post('/clean-image-binary', async (req, res) => {
+  console.log('[API] Recebida solicitação em /clean-image-binary');
+  
   try {
     const { base64 } = req.body;
     
     if (!base64) {
+      console.error('[ERRO] Requisição sem o campo base64');
       return res.status(400).send('Imagem não fornecida. Envie um JSON com o campo "base64".');
     }
     
-    // Decodificar e validar o Base64
+    console.log('[API] Decodificando base64 da requisição');
     let inputBuffer;
     try {
-      inputBuffer = await decodificarBase64(base64);
+      // Uso direto, sem await (função não é assíncrona)
+      inputBuffer = decodificarBase64(base64);
     } catch (error) {
+      console.error('[ERRO] Falha na decodificação:', error);
       return res.status(400).send(`Base64 inválido: ${error.message}`);
     }
     
-    // Processar a imagem
-    const finalBuffer = await processarImagem(inputBuffer);
-    
-    // Configurar e enviar a resposta
-    res.set('Content-Type', 'image/jpeg');
-    res.set('Content-Disposition', 'attachment; filename="imagem-purificada.jpg"');
-    res.send(finalBuffer);
+    console.log('[API] Iniciando processamento da imagem');
+    try {
+      const finalBuffer = await processarImagem(inputBuffer);
+      
+      console.log('[API] Retornando resultado como binário');
+      res.set('Content-Type', 'image/jpeg');
+      res.set('Content-Disposition', 'attachment; filename="imagem-purificada.jpg"');
+      return res.send(finalBuffer);
+    } catch (err) {
+      console.error('[ERRO] Falha no processamento:', err);
+      return res.status(500).send(`Erro ao processar imagem: ${err.message}`);
+    }
   } catch (err) {
-    console.error('Erro ao processar imagem (binário):', err);
-    res.status(500).send(`Erro ao processar imagem: ${err.message}`);
+    console.error('[ERRO] Erro geral no endpoint:', err);
+    return res.status(500).send(`Erro interno do servidor: ${err.message}`);
   }
 });
 
-// Adicionar endpoint de diagnóstico
+// Endpoint de diagnóstico robusto
 app.post('/diagnose', async (req, res) => {
+  console.log('[API] Recebida solicitação de diagnóstico');
+  
   try {
     const { base64 } = req.body;
     
     if (!base64) {
+      console.error('[ERRO] Requisição sem o campo base64');
       return res.status(400).json({ error: 'Imagem não fornecida' });
     }
     
-    // Decodificar e validar o Base64
-    let inputBuffer;
+    // Análise passo a passo para diagnóstico detalhado
+    const diagnostico = {
+      passos: [],
+      erros: [],
+      resultado: 'falha', // padrão pessimista
+      detalhes: {}
+    };
+    
+    // Passo 1: Tentar decodificar base64
     try {
-      inputBuffer = await decodificarBase64(base64);
+      diagnostico.passos.push('Iniciando decodificação base64');
+      const inputBuffer = decodificarBase64(base64);
+      diagnostico.passos.push(`Base64 decodificado: ${inputBuffer.length} bytes`);
+      diagnostico.detalhes.tamanhoBuffer = inputBuffer.length;
       
-      // Tentar ler informações da imagem para verificar se é válida
-      const metadata = await sharp(inputBuffer).metadata();
-      
-      return res.json({
-        status: 'success',
-        message: 'Imagem válida',
-        metadata: {
+      // Passo 2: Tentar ler metadados
+      try {
+        diagnostico.passos.push('Lendo metadados');
+        const metadata = await sharp(inputBuffer).metadata();
+        diagnostico.passos.push('Metadados lidos com sucesso');
+        diagnostico.detalhes.metadata = {
           formato: metadata.format,
           largura: metadata.width,
           altura: metadata.height,
           canais: metadata.channels,
-          temAlpha: metadata.hasAlpha,
-          tamanho: inputBuffer.length
+          temAlpha: metadata.hasAlpha
+        };
+        
+        // Passo 3: Tentar processar (opcional, sem falhar tudo)
+        try {
+          diagnostico.passos.push('Tentando processamento básico');
+          await sharp(inputBuffer).jpeg().toBuffer();
+          diagnostico.passos.push('Processamento básico bem-sucedido');
+          
+          // Se chegou até aqui, está tudo ok
+          diagnostico.resultado = 'sucesso';
+        } catch (processError) {
+          diagnostico.erros.push(`Erro no processamento: ${processError.message}`);
+          // Continua mesmo com erro no processamento
         }
-      });
-    } catch (error) {
-      return res.status(400).json({
-        status: 'error',
-        message: `Diagnóstico falhou: ${error.message}`,
-        tamanhoBuffer: inputBuffer ? inputBuffer.length : 0
-      });
+      } catch (metadataError) {
+        diagnostico.erros.push(`Erro ao ler metadados: ${metadataError.message}`);
+      }
+    } catch (decodeError) {
+      diagnostico.erros.push(`Erro na decodificação: ${decodeError.message}`);
     }
+    
+    // Retorno detalhado
+    return res.json({
+      status: diagnostico.resultado,
+      passos: diagnostico.passos,
+      erros: diagnostico.erros,
+      detalhes: diagnostico.detalhes
+    });
   } catch (err) {
-    console.error('Erro no diagnóstico:', err);
-    res.status(500).json({ 
+    console.error('[ERRO] Erro geral no diagnóstico:', err);
+    return res.status(500).json({ 
       error: `Erro durante diagnóstico: ${err.message}` 
     });
   }
 });
 
+// Adicionar rota para verificar se o serviço está funcionando
+app.get('/status', (req, res) => {
+  res.json({
+    status: 'online',
+    versao: '1.0.0',
+    timestamp: new Date().toISOString()
+  });
+});
+
 const port = process.env.PORT || 8080;
-app.listen(port, () => console.log(`🚀 Anti-Detector Pro Zuck 3.0 rodando na porta ${port}`));
+app.listen(port, () => {
+  console.log(`🚀 Anti-Detector de IA rodando na porta ${port}`);
+  console.log(`📋 Endpoints disponíveis:`);
+  console.log(`   - POST /clean-image (retorna base64)`);
+  console.log(`   - POST /clean-image-binary (retorna arquivo)`);
+  console.log(`   - POST /diagnose (verifica imagem)`);
+  console.log(`   - GET /status (verifica servidor)`);
+});
