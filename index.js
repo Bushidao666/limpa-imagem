@@ -98,7 +98,8 @@ async function processarImagem(inputBuffer) {
 }
 
 // Função para validar e decodificar Base64
-function decodificarBase64(base64String) {
+// Transformando em função assíncrona
+async function decodificarBase64(base64String) {
   try {
     // Remover prefixo de data URI se existir
     let base64Data = base64String;
@@ -117,18 +118,11 @@ function decodificarBase64(base64String) {
       throw new Error('Buffer vazio após decodificação');
     }
     
-    // Fazer uma limpeza inicial com Sharp para remover metadados já neste estágio
-    // Isso ajuda a remover assinaturas que possam estar no início do processo
-    return sharp(buffer)
-      .withMetadata(false)
-      .toBuffer();
+    // Retornar apenas o buffer original - removendo a parte que usava Sharp aqui
+    // para evitar problemas com promessas
+    return buffer;
   } catch (error) {
-    // Se a limpeza com Sharp falhar, tentar retornar o buffer original
-    try {
-      return Buffer.from(base64Data, 'base64');
-    } catch (e) {
-      throw new Error(`Falha ao decodificar Base64: ${error.message}`);
-    }
+    throw new Error(`Falha ao decodificar Base64: ${error.message}`);
   }
 }
 
@@ -146,7 +140,7 @@ app.post('/clean-image', async (req, res) => {
     // Decodificar e validar o Base64
     let inputBuffer;
     try {
-      inputBuffer = decodificarBase64(base64);
+      inputBuffer = await decodificarBase64(base64);
     } catch (error) {
       return res.status(400).json({ 
         error: `Base64 inválido: ${error.message}` 
@@ -179,7 +173,7 @@ app.post('/clean-image-binary', async (req, res) => {
     // Decodificar e validar o Base64
     let inputBuffer;
     try {
-      inputBuffer = decodificarBase64(base64);
+      inputBuffer = await decodificarBase64(base64);
     } catch (error) {
       return res.status(400).send(`Base64 inválido: ${error.message}`);
     }
@@ -209,7 +203,7 @@ app.post('/diagnose', async (req, res) => {
     // Decodificar e validar o Base64
     let inputBuffer;
     try {
-      inputBuffer = decodificarBase64(base64);
+      inputBuffer = await decodificarBase64(base64);
       
       // Tentar ler informações da imagem para verificar se é válida
       const metadata = await sharp(inputBuffer).metadata();
