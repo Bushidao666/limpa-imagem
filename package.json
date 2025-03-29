@@ -1,17 +1,16 @@
 {
-"name": "limpa-imagem",
-"version": "1.0.0",
-"main": "index.js",
-"scripts": {
-"test": "echo" 
-"Error": "no test specified exit 1"
-},
-"keywords": [],
-"author": "",
-"license": "ISC",
-"dependencies": {
-"express": "^4.21.2",
-"sharp": "^0.33.5"
-},
-"description": ""
+  "name": "limpa-imagem",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^4.21.2",
+    "sharp": "^0.33.5"
+  },
+  "description": ""
 }
