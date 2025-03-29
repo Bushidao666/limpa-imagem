@@ -1,139 +1,163 @@
 const express = require('express');
 const sharp = require('sharp');
-
 const app = express();
-// Aumentar o limite se estiver processando imagens muito grandes em base64
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
+app.use(express.json({ limit: '25mb' }));
 
-// Função Centralizada de Processamento de Imagem
-async function processImageForEvasion(base64, options = {}) {
-    const {
-        forceResize = true,      // Forçar redimensionamento para reamostragem?
-        noiseSigma = 8.0,        // Intensidade do ruído Gaussiano (experimente 5.0 a 15.0+)
-        blurSigma = 0.5,         // Intensidade do desfoque Gaussiano (experimente 0.4 a 0.8)
-        varyQuality = true,      // Variar a qualidade JPEG final?
-        baseJpegQuality = 85,    // Qualidade base (se varyQuality=true, varia em torno disso)
-        modulateColor = true,    // Aplicar leve variação aleatória de cor/brilho?
-        targetFormat = 'jpeg'    // Formato de saída ('jpeg' ou 'png', etc.) - PNG não terá qualidade variável
-    } = options;
-
-    if (!base64) {
-        throw new Error('Imagem (base64) não fornecida.');
+// Função para aplicar transformações avançadas contra detecção de IA
+async function processarImagem(inputBuffer) {
+  // Primeiro extrair dimensões da imagem
+  const metadata = await sharp(inputBuffer).metadata();
+  
+  // Converter para raw para manipulação de pixels
+  const { data, info } = await sharp(inputBuffer)
+    .removeAlpha()
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  
+  // 1. Aplicar ruído não uniforme intenso
+  for (let i = 0; i < data.length; i += 4) {
+    // Aplicar diferentes níveis de ruído para R, G, B
+    for (let j = 0; j < 3; j++) {
+      // Ruído base significativo
+      const ruido = (Math.random() * 8 - 4);
+      
+      // Adicionar padrão não-uniforme
+      const position = i / 4;
+      const x = position % info.width;
+      const y = Math.floor(position / info.width);
+      
+      // Mais ruído nas bordas (como em fotos reais)
+      const distanceFromEdge = Math.min(
+        x, y, info.width - x, info.height - y
+      ) / Math.min(info.width, info.height);
+      
+      // Ruído adicional nas bordas
+      const ruidoBorda = 5 * (1 - distanceFromEdge) * 2;
+      
+      // Padrão aleatório ao longo da imagem para quebrar padrões de IA
+      const ruidoPadrao = Math.sin(x/10) * Math.cos(y/8) * 3;
+      
+      // Aplicar todos os tipos de ruído
+      data[i + j] = Math.min(255, Math.max(0, data[i + j] + ruido + ruidoBorda + ruidoPadrao));
     }
-
-    const inputBuffer = Buffer.from(base64, 'base64');
-    let imageProcessor = sharp(inputBuffer);
-    const originalMetadata = await imageProcessor.metadata(); // Pega metadados originais para o resize
-
-    // 1. Forçar Reamostragem via Redimensionamento Mínimo
-    if (forceResize && originalMetadata.width && originalMetadata.height) {
-        const tempWidth = Math.max(10, Math.floor(originalMetadata.width * 0.995));
-        const tempHeight = Math.max(10, Math.floor(originalMetadata.height * 0.995));
-        // Reduz ligeiramente e depois volta ao original para forçar interpolação
-        imageProcessor = imageProcessor.resize(tempWidth, tempHeight, { fit: 'inside' });
-        imageProcessor = imageProcessor.resize(originalMetadata.width, originalMetadata.height);
+  }
+  
+  // Reconverter para imagem
+  let processedImage = sharp(data, { 
+    raw: { 
+      width: info.width, 
+      height: info.height, 
+      channels: info.channels 
+    } 
+  });
+  
+  // 2. Criar e aplicar grain forte de filme
+  const grainWidth = Math.ceil(info.width / 2) * 2;
+  const grainHeight = Math.ceil(info.height / 2) * 2;
+  const grainBuffer = Buffer.alloc(grainWidth * grainHeight * 4);
+  
+  // Preencher buffer com ruído granular não uniforme
+  for (let i = 0; i < grainBuffer.length; i += 4) {
+    // Grain mais intenso
+    const grainValue = Math.floor(Math.random() * 255 * 1.2);
+    grainBuffer[i] = grainBuffer[i + 1] = grainBuffer[i + 2] = grainValue;
+    grainBuffer[i + 3] = 45; // Alpha um pouco mais alto para grain mais visível
+  }
+  
+  const grainImage = sharp(grainBuffer, {
+    raw: {
+      width: grainWidth,
+      height: grainHeight,
+      channels: 4
     }
-
-    // 2. Adicionar Desfoque Gaussiano Sutil
-    if (blurSigma > 0) {
-        imageProcessor = imageProcessor.blur(blurSigma);
-    }
-
-    // 3. Adicionar Ruído/Granulação Gaussiana
-    if (noiseSigma > 0) {
-        imageProcessor = imageProcessor.noise(noiseSigma);
-    }
-
-    // 4. Leve Modulação Aleatória de Cor (Brilho/Saturação)
-    if (modulateColor) {
-        // Variação muito pequena (ex: 0.99 a 1.01)
-        const brightnessFactor = 1 + (Math.random() * 0.02 - 0.01);
-        const saturationFactor = 1 + (Math.random() * 0.02 - 0.01);
-        // Hue shift é mais perceptível, usar com cuidado ou omitir
-        // const hueShift = Math.random() * 2 - 1; // Rotação de -1 a +1 grau
-        imageProcessor = imageProcessor.modulate({
-            brightness: brightnessFactor,
-            saturation: saturationFactor,
-            // hue: hueShift
-        });
-    }
-
-    // 5. Preparar Opções de Formato de Saída e Remover Metadados
-    let outputOptions = {};
-    if (targetFormat === 'jpeg') {
-        let finalQuality = baseJpegQuality;
-        if (varyQuality) {
-            // Varia a qualidade em +/- 5 (ex: 80 a 90 se base for 85)
-            finalQuality = Math.floor(baseJpegQuality - 5 + Math.random() * 11);
-            finalQuality = Math.max(70, Math.min(95, finalQuality)); // Limita entre 70 e 95
-        }
-        outputOptions = {
-            quality: finalQuality,
-            mozjpeg: true, // Tenta usar mozjpeg para compressão diferente
-            // progressive: true // Outra opção a testar
-        };
-        imageProcessor = imageProcessor.jpeg(outputOptions);
-    } else if (targetFormat === 'png') {
-        // PNG tem compressão lossless, qualidade não se aplica da mesma forma
-        outputOptions = {
-            compressionLevel: 9, // Máxima compressão (menor tamanho, mais lento)
-            // progressive: true
-        };
-         imageProcessor = imageProcessor.png(outputOptions);
-    } else {
-         // Fallback para JPEG se formato desconhecido
-         imageProcessor = imageProcessor.jpeg({ quality: baseJpegQuality, mozjpeg: true });
-    }
-
-    // Sempre remove todos os metadados na conversão final e define um DPI padrão
-    const finalBuffer = await imageProcessor
-        .withMetadata({ density: 72 }) // Remove tudo e define DPI comum
-        .toBuffer();
-
-    return finalBuffer;
+  }).resize(info.width, info.height);
+  
+  // Compositar o grain sobre a imagem
+  processedImage = await processedImage
+    .composite([{ input: await grainImage.toBuffer(), blend: 'overlay' }]);
+  
+  // 3. Adicionar leve blur não uniforme seguido de sharpening
+  // Primeiro blur leve para quebrar padrões de pixels
+  processedImage = processedImage.blur(0.7);
+  
+  // 4. Re-sharpening seletivo para simular pós-processamento de câmera
+  processedImage = processedImage.sharpen({
+    sigma: 1.2,
+    m1: 0.5,
+    m2: 0.7,
+    x1: 2.0,
+    y2: 20.0,
+    y3: 20.0
+  });
+  
+  // 5. Simular artefatos de compressão JPEG 
+  processedImage = processedImage.jpeg({ 
+    quality: 83,
+    chromaSubsampling: '4:2:0', // Subsampling típico de câmeras
+    force: true
+  });
+  
+  // 6. Adicionar leve rotação/transformação
+  // Rotação muito leve (menos de 1 grau) para evitar padrões de pixels perfeitamente alinhados
+  const rotacaoLeve = (Math.random() * 0.8 - 0.4);
+  processedImage = processedImage.rotate(rotacaoLeve, {
+    background: { r: 255, g: 255, b: 255, alpha: 0 }
+  });
+  
+  // 7. Ajuste leve de cor para quebrar padrões de cor da IA
+  processedImage = processedImage
+    .modulate({
+      brightness: 1 + (Math.random() * 0.1 - 0.05), // ±5% variação de brilho
+      saturation: 1 + (Math.random() * 0.15 - 0.05), // ±5-10% variação de saturação
+      hue: Math.floor(Math.random() * 7 - 3) // Leve alteração de matiz
+    });
+  
+  // 8. Remover todos os metadados
+  return processedImage
+    .withMetadata({ exif: false, icc: false, xmp: false })
+    .toBuffer();
 }
 
-// --- Endpoints ---
-
 // 🔹 Endpoint que retorna BASE64
-app.post('/process-image-base64', async (req, res) => {
-    try {
-        const { base64, options } = req.body;
-        if (!base64) return res.status(400).json({ error: 'Imagem (base64) não fornecida.' });
+app.post('/clean-image', async (req, res) => {
+  try {
+    const { base64 } = req.body;
+    if (!base64) return res.status(400).json({ error: 'Imagem não fornecida.' });
 
-        const finalBuffer = await processImageForEvasion(base64, options);
-        const processedBase64 = finalBuffer.toString('base64');
-        res.json({ processedBase64 });
-
-    } catch (err) {
-        console.error('Erro ao processar imagem (base64):', err.message);
-        res.status(500).json({ error: err.message || 'Erro interno ao processar imagem' });
-    }
+    const inputBuffer = Buffer.from(base64, 'base64');
+    
+    // Aplicar todas as transformações anti-detecção
+    const finalBuffer = await processarImagem(inputBuffer);
+    
+    const cleanedBase64 = finalBuffer.toString('base64');
+    res.json({ cleanedBase64 });
+  } catch (err) {
+    console.error('Erro ao processar imagem (base64):', err);
+    res.status(500).json({ error: 'Erro ao processar imagem' });
+  }
 });
 
 // 🔹 Endpoint que retorna BINÁRIO
-app.post('/process-image-binary', async (req, res) => {
-    try {
-        const { base64, options } = req.body;
-        if (!base64) return res.status(400).send('Imagem (base64) não fornecida.');
+app.post('/clean-image-binary', async (req, res) => {
+  try {
+    const { base64 } = req.body;
+    if (!base64) return res.status(400).send('Imagem não fornecida.');
 
-        const finalBuffer = await processImageForEvasion(base64, options);
-
-        const format = options?.targetFormat || 'jpeg'; // Pega o formato das opções ou usa jpeg
-        const mimeType = format === 'png' ? 'image/png' : 'image/jpeg';
-        const filename = `imagem-processada.${format}`;
-
-        res.set('Content-Type', mimeType);
-        res.set('Content-Disposition', `attachment; filename="${filename}"`);
-        res.send(finalBuffer);
-
-    } catch (err) {
-        console.error('Erro ao processar imagem (binário):', err.message);
-        res.status(500).send(err.message || 'Erro interno ao processar imagem');
-    }
+    const inputBuffer = Buffer.from(base64, 'base64');
+    
+    // Aplicar todas as transformações anti-detecção
+    const finalBuffer = await processarImagem(inputBuffer);
+    
+    res.set('Content-Type', 'image/jpeg');
+    res.set('Content-Disposition', 'attachment; filename="imagem-purificada.jpg"');
+    res.send(finalBuffer);
+  } catch (err) {
+    console.error('Erro ao processar imagem (binário):', err);
+    res.status(500).send('Erro ao processar imagem');
+  }
 });
 
 const port = process.env.PORT || 3000;
-app.listen(port, () => console.log(`🚀 Processador de Imagens Anti-Zuck v3 rodando na porta ${port}`));
+app.listen(port, () => console.log(`🚀 Anti-Detector Pro Zuck 2.0 rodando na porta ${port}`));
