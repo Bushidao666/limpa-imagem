@@ -2,27 +2,22 @@ const express = require('express');
 const sharp = require('sharp');
 
 const app = express();
-// Ajuste o limite conforme necessário para suas imagens base64
+// Aumentar o limite se estiver processando imagens muito grandes em base64
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-// --- Função de Processamento com Ruído Manual (Estilo Original) ---
-async function processImageWithManualNoise(base64, options = {}) {
-    // Define valores padrão
-    const defaultOptions = {
-        forceResize: true,
-        manualNoiseAmount: 10,
-        blurSigma: 0.6,
-        varyQuality: true,
-        baseJpegQuality: 85,
-        modulateColor: true,
-        posterizeLevels: 24,     // <--- Será usado com .posterize() agora
-        medianFilterSize: 0,
-        targetFormat: 'jpeg'
-    };
 
-    // Mescla as opções fornecidas com os padrões
-    const config = { ...defaultOptions, ...options };
+// Função Centralizada de Processamento de Imagem
+async function processImageForEvasion(base64, options = {}) {
+    const {
+        forceResize = true,      // Forçar redimensionamento para reamostragem?
+        noiseSigma = 8.0,        // Intensidade do ruído Gaussiano (experimente 5.0 a 15.0+)
+        blurSigma = 0.5,         // Intensidade do desfoque Gaussiano (experimente 0.4 a 0.8)
+        varyQuality = true,      // Variar a qualidade JPEG final?
+        baseJpegQuality = 85,    // Qualidade base (se varyQuality=true, varia em torno disso)
+        modulateColor = true,    // Aplicar leve variação aleatória de cor/brilho?
+        targetFormat = 'jpeg'    // Formato de saída ('jpeg' ou 'png', etc.) - PNG não terá qualidade variável
+    } = options;
 
     if (!base64) {
         throw new Error('Imagem (base64) não fornecida.');
@@ -30,164 +25,115 @@ async function processImageWithManualNoise(base64, options = {}) {
 
     const inputBuffer = Buffer.from(base64, 'base64');
     let imageProcessor = sharp(inputBuffer);
-    const originalMetadata = await imageProcessor.metadata();
-
-    console.log(`Iniciando processamento com config:`, config);
-
-    // --- Aplica Efeitos ANTES do Ruído Manual ---
+    const originalMetadata = await imageProcessor.metadata(); // Pega metadados originais para o resize
 
     // 1. Forçar Reamostragem via Redimensionamento Mínimo
-    if (config.forceResize && originalMetadata.width && originalMetadata.height) {
-        console.log('Aplicando resize...');
+    if (forceResize && originalMetadata.width && originalMetadata.height) {
         const tempWidth = Math.max(10, Math.floor(originalMetadata.width * 0.995));
         const tempHeight = Math.max(10, Math.floor(originalMetadata.height * 0.995));
+        // Reduz ligeiramente e depois volta ao original para forçar interpolação
         imageProcessor = imageProcessor.resize(tempWidth, tempHeight, { fit: 'inside' });
         imageProcessor = imageProcessor.resize(originalMetadata.width, originalMetadata.height);
     }
 
     // 2. Adicionar Desfoque Gaussiano Sutil
-    if (config.blurSigma > 0) {
-        console.log(`Aplicando blur (sigma: ${config.blurSigma})...`);
-        imageProcessor = imageProcessor.blur(config.blurSigma);
+    if (blurSigma > 0) {
+        imageProcessor = imageProcessor.blur(blurSigma);
     }
 
-    // 3. Leve Modulação Aleatória de Cor (Brilho/Saturação)
-    if (config.modulateColor) {
-        console.log('Aplicando modulate...');
-        const brightnessFactor = 1 + (Math.random() * 0.02 - 0.01); // +/- 1%
-        const saturationFactor = 1 + (Math.random() * 0.02 - 0.01); // +/- 1%
+    // 3. Adicionar Ruído/Granulação Gaussiana
+    if (noiseSigma > 0) {
+        imageProcessor = imageProcessor.noise(noiseSigma);
+    }
+
+    // 4. Leve Modulação Aleatória de Cor (Brilho/Saturação)
+    if (modulateColor) {
+        // Variação muito pequena (ex: 0.99 a 1.01)
+        const brightnessFactor = 1 + (Math.random() * 0.02 - 0.01);
+        const saturationFactor = 1 + (Math.random() * 0.02 - 0.01);
+        // Hue shift é mais perceptível, usar com cuidado ou omitir
+        // const hueShift = Math.random() * 2 - 1; // Rotação de -1 a +1 grau
         imageProcessor = imageProcessor.modulate({
             brightness: brightnessFactor,
             saturation: saturationFactor,
+            // hue: hueShift
         });
     }
 
-    // 4. Posterização (Reduz gradientes suaves) - CORRIGIDO
-    if (config.posterizeLevels > 1) {
-        console.log(`Aplicando posterize (levels: ${config.posterizeLevels})...`);
-        imageProcessor = imageProcessor.posterize(config.posterizeLevels); // <--- CORREÇÃO AQUI (posterize com 'z')
-    }
-
-    // 5. Filtro Mediana (Suaviza ruído/detalhes finos de forma diferente do blur)
-    if (config.medianFilterSize > 0 && config.medianFilterSize % 2 !== 0) {
-        console.log(`Aplicando median filter (size: ${config.medianFilterSize})...`);
-        imageProcessor = imageProcessor.median(config.medianFilterSize);
-    } else if (config.medianFilterSize > 0) {
-         console.warn(`Median filter size (${config.medianFilterSize}) inválido. Usando 0 (desligado). Deve ser ímpar >= 3.`);
-    }
-
-    // --- PASSO CRÍTICO: Aplica Ruído Manual (se habilitado) ---
-    let bufferParaFormatoFinal;
-
-    if (config.manualNoiseAmount > 0) {
-        console.log(`Aplicando ruído manual (amount: ${config.manualNoiseAmount})...`);
-        try {
-            const bufferAntesDoRuido = await imageProcessor.removeAlpha().jpeg().toBuffer();
-            const { data, info } = await sharp(bufferAntesDoRuido)
-                .raw()
-                .toBuffer({ resolveWithObject: true });
-
-            if (info.channels !== 3) {
-                 console.warn(`Aviso: Esperava 3 canais (RGB) para ruído manual, mas obteve ${info.channels}.`);
-            }
-
-            const noiseRange = config.manualNoiseAmount * 2;
-            for (let i = 0; i < data.length; i++) {
-                const noise = Math.random() * noiseRange - config.manualNoiseAmount;
-                data[i] = Math.min(255, Math.max(0, data[i] + noise));
-            }
-
-            bufferParaFormatoFinal = await sharp(data, {
-                raw: {
-                    width: info.width,
-                    height: info.height,
-                    channels: info.channels
-                }
-            });
-
-        } catch (noiseError) {
-            console.error("Erro ao aplicar ruído manual, continuando sem ele:", noiseError);
-            bufferParaFormatoFinal = imageProcessor;
-        }
-    } else {
-        bufferParaFormatoFinal = imageProcessor;
-    }
-
-    // --- PASSO FINAL: Formatação e Remoção de Metadados ---
+    // 5. Preparar Opções de Formato de Saída e Remover Metadados
     let outputOptions = {};
-    let finalMimeType = 'image/jpeg';
-    let finalExtension = 'jpg';
-
-    if (Buffer.isBuffer(bufferParaFormatoFinal)) {
-        bufferParaFormatoFinal = sharp(bufferParaFormatoFinal);
-        console.warn("Recriando objeto sharp inesperadamente antes da formatação final.");
-    } else if (typeof bufferParaFormatoFinal.jpeg !== 'function') {
-         console.error("Erro crítico: objeto inválido antes da formatação final. Usando imagem original processada sem ruído.");
-         bufferParaFormatoFinal = imageProcessor;
-    }
-
-    if (config.targetFormat === 'jpeg') {
-        let finalQuality = config.baseJpegQuality;
-        if (config.varyQuality) {
-            finalQuality = Math.floor(config.baseJpegQuality - 5 + Math.random() * 11);
-            finalQuality = Math.max(70, Math.min(95, finalQuality));
+    if (targetFormat === 'jpeg') {
+        let finalQuality = baseJpegQuality;
+        if (varyQuality) {
+            // Varia a qualidade em +/- 5 (ex: 80 a 90 se base for 85)
+            finalQuality = Math.floor(baseJpegQuality - 5 + Math.random() * 11);
+            finalQuality = Math.max(70, Math.min(95, finalQuality)); // Limita entre 70 e 95
         }
-        console.log(`Convertendo para JPEG (quality: ${finalQuality})...`);
-        outputOptions = { quality: finalQuality, mozjpeg: true };
-        bufferParaFormatoFinal = bufferParaFormatoFinal.jpeg(outputOptions);
-        finalMimeType = 'image/jpeg';
-        finalExtension = 'jpg';
-    } else if (config.targetFormat === 'png') {
-        console.log('Convertendo para PNG...');
-        outputOptions = { compressionLevel: 9 };
-        bufferParaFormatoFinal = bufferParaFormatoFinal.png(outputOptions);
-        finalMimeType = 'image/png';
-        finalExtension = 'png';
+        outputOptions = {
+            quality: finalQuality,
+            mozjpeg: true, // Tenta usar mozjpeg para compressão diferente
+            // progressive: true // Outra opção a testar
+        };
+        imageProcessor = imageProcessor.jpeg(outputOptions);
+    } else if (targetFormat === 'png') {
+        // PNG tem compressão lossless, qualidade não se aplica da mesma forma
+        outputOptions = {
+            compressionLevel: 9, // Máxima compressão (menor tamanho, mais lento)
+            // progressive: true
+        };
+         imageProcessor = imageProcessor.png(outputOptions);
     } else {
-        console.warn(`Formato de saída '${config.targetFormat}' não suportado, usando JPEG.`);
-        bufferParaFormatoFinal = bufferParaFormatoFinal.jpeg({ quality: config.baseJpegQuality, mozjpeg: true });
+         // Fallback para JPEG se formato desconhecido
+         imageProcessor = imageProcessor.jpeg({ quality: baseJpegQuality, mozjpeg: true });
     }
 
-    console.log('Removendo metadados...');
-    const finalBuffer = await bufferParaFormatoFinal
-        .withMetadata({ density: 72 })
+    // Sempre remove todos os metadados na conversão final e define um DPI padrão
+    const finalBuffer = await imageProcessor
+        .withMetadata({ density: 72 }) // Remove tudo e define DPI comum
         .toBuffer();
 
-    console.log('Processamento concluído.');
-    return { buffer: finalBuffer, mimeType: finalMimeType, extension: finalExtension };
+    return finalBuffer;
 }
 
 // --- Endpoints ---
 
 // 🔹 Endpoint que retorna BASE64
-app.post('/process-base64', async (req, res) => {
+app.post('/process-image-base64', async (req, res) => {
     try {
         const { base64, options } = req.body;
         if (!base64) return res.status(400).json({ error: 'Imagem (base64) não fornecida.' });
-        const { buffer } = await processImageWithManualNoise(base64, options);
-        const processedBase64 = buffer.toString('base64');
+
+        const finalBuffer = await processImageForEvasion(base64, options);
+        const processedBase64 = finalBuffer.toString('base64');
         res.json({ processedBase64 });
+
     } catch (err) {
-        console.error('Erro ao processar imagem (base64):', err.message, err.stack);
+        console.error('Erro ao processar imagem (base64):', err.message);
         res.status(500).json({ error: err.message || 'Erro interno ao processar imagem' });
     }
 });
 
 // 🔹 Endpoint que retorna BINÁRIO
-app.post('/process-binary', async (req, res) => {
+app.post('/process-image-binary', async (req, res) => {
     try {
         const { base64, options } = req.body;
         if (!base64) return res.status(400).send('Imagem (base64) não fornecida.');
-        const { buffer, mimeType, extension } = await processImageWithManualNoise(base64, options);
-        const filename = `imagem-processada-${Date.now()}.${extension}`;
+
+        const finalBuffer = await processImageForEvasion(base64, options);
+
+        const format = options?.targetFormat || 'jpeg'; // Pega o formato das opções ou usa jpeg
+        const mimeType = format === 'png' ? 'image/png' : 'image/jpeg';
+        const filename = `imagem-processada.${format}`;
+
         res.set('Content-Type', mimeType);
         res.set('Content-Disposition', `attachment; filename="${filename}"`);
-        res.send(buffer);
+        res.send(finalBuffer);
+
     } catch (err) {
-        console.error('Erro ao processar imagem (binário):', err.message, err.stack);
+        console.error('Erro ao processar imagem (binário):', err.message);
         res.status(500).send(err.message || 'Erro interno ao processar imagem');
     }
 });
 
 const port = process.env.PORT || 3000;
-app.listen(port, () => console.log(`🚀 Processador de Imagens Anti-Zuck v6.1 (Manual Noise - Fix Posterize) rodando na porta ${port}`));
+app.listen(port, () => console.log(`🚀 Processador de Imagens Anti-Zuck v3 rodando na porta ${port}`));
