@@ -58,27 +58,62 @@ async function processarImagem(inputBuffer) {
       background: { r: 255, g: 255, b: 255, alpha: 0 }
     });
     
-    // ETAPA 3: Simular ruído/grain usando método convolve (alternativa ao noise)
-    console.log('[PROCESSO] Aplicando ruído com convolve');
-    // Kernel de convolução que adiciona textura de grain
+    // ETAPA 3: Aplicar granulação forte usando técnicas múltiplas
+    console.log('[PROCESSO] Aplicando granulação forte');
+    
+    // Passo 1: Primeiro kernel de convolução para textura base de grain (mais intenso)
     processedImage = processedImage.convolve({
       width: 3,
       height: 3,
       kernel: [
-        0.1, 0.1, 0.1,
-        0.1, 1.0, 0.1,
-        0.1, 0.1, 0.1
+        0.3, 0.3, 0.3,
+        0.3, 1.5, 0.3,
+        0.3, 0.3, 0.3
       ]
     });
     
+    // Passo 2: Aumentar contraste para realçar a granulação
+    processedImage = processedImage.modulate({
+      brightness: 1.05,  // Ligeiro aumento de brilho
+      saturation: 0.92   // Leve redução de saturação para parecer mais filme
+    });
+    
+    // Passo 3: Segundo padrão de convolução com estrutura diferente
+    processedImage = processedImage.convolve({
+      width: 3,
+      height: 3,
+      kernel: [
+        0.2, 0, 0.2,
+        0, 1.7, 0,
+        0.2, 0, 0.2
+      ]
+    });
+    
+    // Passo 4: Leve sharpen para acentuar os grãos
+    processedImage = processedImage.sharpen(10, 1.0, 1.5);
+    
+    // Passo 5: Aumentar contraste novamente para realçar o grain
+    try {
+      processedImage = processedImage.linear(
+        1.1,  // Multiplicador de contraste
+        -10   // Offset para evitar escurecimento excessivo
+      );
+    } catch (e) {
+      // Se o método linear não for suportado, usar gamma como alternativa
+      console.log('[AVISO] Método linear falhou, usando gamma');
+      processedImage = processedImage.gamma(1.2); // Aumentar contraste via gamma
+    }
+    
     // ETAPA 4: Re-processar com JPEG com qualidade específica 
-    // para remover quaisquer metadados remanescentes
-    console.log('[PROCESSO] Finalizando com compressão JPEG');
+    // Qualidade um pouco maior para preservar a granulação
+    console.log('[PROCESSO] Finalizando com compressão JPEG otimizada para grain');
     const finalBuffer = await processedImage
       .jpeg({
-        quality: 85,
+        quality: 92,               // Qualidade maior para preservar textura
         chromaSubsampling: '4:2:0', // Formato comum de câmeras
-        force: true
+        force: true,
+        trellisQuantisation: true, // Melhora a preservação de detalhes finos
+        overshootDeringing: true   // Mantém bordas nítidas
       })
       .toBuffer();
     
